@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2012-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -29,7 +22,8 @@
 # service routines are expected to preserve it and for own well-being
 # zero it upon entry.
 
-($output = pop) =~ m|\.\w+$| and open STDOUT,">$output";
+while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {}
+open STDOUT,">$output";
 
 ($CTXA,$INP,$NUM) = ("A4","B4","A6");            # arguments
  $K512="A3";
@@ -53,14 +47,6 @@
 $code.=<<___;
 	.text
 
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.nocmp
-	.asg	sha512_block_data_order,_sha512_block_data_order
-	.endif
-
 	.asg	B3,RA
 	.asg	A15,FP
 	.asg	B15,SP
@@ -75,7 +61,6 @@ $code.=<<___;
 
 	.global	_sha512_block_data_order
 _sha512_block_data_order:
-__sha512_block:
 	.asmfunc stack_usage(40+128)
 	MV	$NUM,A0				; reassign $NUM
 ||	MVK	-128,B0
@@ -90,19 +75,11 @@ __sha512_block:
    [A0]	STDW	A11:A10,*SP[1]
 || [A0]	MVC	B1,AMR				; setup circular addressing
 || [A0]	ADD	B0,SP,SP			; alloca(128)
-	.if	__TI_EABI__
    [A0]	AND	B0,SP,SP			; align stack at 128 bytes
-|| [A0]	ADDKPC	__sha512_block,B1
-|| [A0]	MVKL	\$PCR_OFFSET(K512,__sha512_block),$K512
-   [A0]	MVKH	\$PCR_OFFSET(K512,__sha512_block),$K512
+|| [A0]	ADDKPC	_sha512_block_data_order,B1
+|| [A0]	MVKL	(K512-_sha512_block_data_order),$K512
+   [A0]	MVKH	(K512-_sha512_block_data_order),$K512
 || [A0]	SUBAW	SP,2,SP				; reserve two words above buffer
-	.else
-   [A0]	AND	B0,SP,SP			; align stack at 128 bytes
-|| [A0]	ADDKPC	__sha512_block,B1
-|| [A0]	MVKL	(K512-__sha512_block),$K512
-   [A0]	MVKH	(K512-__sha512_block),$K512
-|| [A0]	SUBAW	SP,2,SP				; reserve two words above buffer
-	.endif
 	ADDAW	SP,3,$Xilo
 	ADDAW	SP,2,$Xihi
 
@@ -382,11 +359,7 @@ break?:
 	NOP	2				; wait till FP is committed
 	.endasmfunc
 
-	.if	__TI_EABI__
-	.sect	".text:sha_asm.const"
-	.else
 	.sect	".const:sha_asm"
-	.endif
 	.align	128
 K512:
 	.uword	0x428a2f98,0xd728ae22, 0x71374491,0x23ef65cd
@@ -434,4 +407,4 @@ K512:
 ___
 
 print $code;
-close STDOUT or die "error closing STDOUT: $!";
+close STDOUT;

@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2014-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -40,13 +33,8 @@
 #		CBC en-/decrypt	CTR	XTS
 # POWER8[le]	3.96/0.72	0.74	1.1
 # POWER8[be]	3.75/0.65	0.66	1.0
-# POWER9[le]	4.02/0.86	0.84	1.05
-# POWER9[be]	3.99/0.78	0.79	0.97
 
-# $output is the last argument if it looks like a file (it has an extension)
-# $flavour is the first argument if it doesn't look like a file
-$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
-$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
+$flavour = shift;
 
 if ($flavour =~ /64/) {
 	$SIZE_T	=8;
@@ -73,8 +61,7 @@ $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
 ( $xlate="${dir}../../perlasm/ppc-xlate.pl" and -f $xlate) or
 die "can't locate ppc-xlate.pl";
 
-open STDOUT,"| $^X $xlate $flavour \"$output\""
-    or die "can't call $xlate: $!";
+open STDOUT,"| $^X $xlate $flavour ".shift || die "can't call $xlate: $!";
 
 $FRAME=8*$SIZE_T;
 $prefix="aes_p8";
@@ -99,12 +86,11 @@ rcon:
 .long	0x1b000000, 0x1b000000, 0x1b000000, 0x1b000000	?rev
 .long	0x0d0e0f0c, 0x0d0e0f0c, 0x0d0e0f0c, 0x0d0e0f0c	?rev
 .long	0,0,0,0						?asis
-.long	0x0f102132, 0x43546576, 0x8798a9ba, 0xcbdcedfe
 Lconsts:
 	mflr	r0
 	bcl	20,31,\$+4
 	mflr	$ptr	 #vvvvv "distance between . and rcon
-	addi	$ptr,$ptr,-0x58
+	addi	$ptr,$ptr,-0x48
 	mtlr	r0
 	blr
 	.long	0
@@ -1834,7 +1820,7 @@ Lctr32_enc8x_three:
 	stvx_u		$out1,$x10,$out
 	stvx_u		$out2,$x20,$out
 	addi		$out,$out,0x30
-	b		Lctr32_enc8x_done
+	b		Lcbc_dec8x_done
 
 .align	5
 Lctr32_enc8x_two:
@@ -1846,7 +1832,7 @@ Lctr32_enc8x_two:
 	stvx_u		$out0,$x00,$out
 	stvx_u		$out1,$x10,$out
 	addi		$out,$out,0x20
-	b		Lctr32_enc8x_done
+	b		Lcbc_dec8x_done
 
 .align	5
 Lctr32_enc8x_one:
@@ -1916,15 +1902,6 @@ ___
 
 #########################################################################
 {{{	# XTS procedures						#
-# int aes_p8_xts_[en|de]crypt(const char *inp, char *out, size_t len,	#
-#                             const AES_KEY *key1, const AES_KEY *key2,	#
-#                             [const] unsigned char iv[16]);		#
-# If $key2 is NULL, then a "tweak chaining" mode is engaged, in which	#
-# input tweak value is assumed to be encrypted already, and last tweak	#
-# value, one suitable for consecutive call on same chunk of data, is	#
-# written back to original buffer. In addition, in "tweak chaining"	#
-# mode only complete input blocks are processed.			#
-
 my ($inp,$out,$len,$key1,$key2,$ivp,$rounds,$idx) =	map("r$_",(3..10));
 my ($rndkey0,$rndkey1,$inout) =				map("v$_",(0..2));
 my ($output,$inptail,$inpperm,$leperm,$keyperm) =	map("v$_",(3..7));
@@ -1959,20 +1936,17 @@ $code.=<<___;
 	le?vxor		$inpperm,$inpperm,$tmp
 	vperm		$tweak,$tweak,$inptail,$inpperm
 
-	neg		r11,$inp
-	lvsr		$inpperm,0,r11			# prepare for unaligned load
-	lvx		$inout,0,$inp
-	addi		$inp,$inp,15			# 15 is not typo
-	le?vxor		$inpperm,$inpperm,$tmp
-
-	${UCMP}i	$key2,0				# key2==NULL?
-	beq		Lxts_enc_no_key2
-
 	?lvsl		$keyperm,0,$key2		# prepare for unaligned key
 	lwz		$rounds,240($key2)
 	srwi		$rounds,$rounds,1
 	subi		$rounds,$rounds,1
 	li		$idx,16
+
+	neg		r11,$inp
+	lvsr		$inpperm,0,r11			# prepare for unaligned load
+	lvx		$inout,0,$inp
+	addi		$inp,$inp,15			# 15 is not typo
+	le?vxor		$inpperm,$inpperm,$tmp
 
 	lvx		$rndkey0,0,$key2
 	lvx		$rndkey1,$idx,$key2
@@ -1997,18 +1971,10 @@ Ltweak_xts_enc:
 	?vperm		$rndkey1,$rndkey1,$rndkey0,$keyperm
 	vcipher		$tweak,$tweak,$rndkey1
 	lvx		$rndkey1,$idx,$key2
+	li		$idx,16
 	?vperm		$rndkey0,$rndkey0,$rndkey1,$keyperm
 	vcipherlast	$tweak,$tweak,$rndkey0
 
-	li		$ivp,0				# don't chain the tweak
-	b		Lxts_enc
-
-Lxts_enc_no_key2:
-	li		$idx,-16
-	and		$len,$len,$idx			# in "tweak chaining"
-							# mode only complete
-							# blocks are processed
-Lxts_enc:
 	lvx		$inptail,0,$inp
 	addi		$inp,$inp,16
 
@@ -2124,19 +2090,6 @@ Loop_xts_enc_steal:
 	b		Loop_xts_enc			# one more time...
 
 Lxts_enc_done:
-	${UCMP}i	$ivp,0
-	beq		Lxts_enc_ret
-
-	vsrab		$tmp,$tweak,$seven		# next tweak value
-	vaddubm		$tweak,$tweak,$tweak
-	vsldoi		$tmp,$tmp,$tmp,15
-	vand		$tmp,$tmp,$eighty7
-	vxor		$tweak,$tweak,$tmp
-
-	le?vperm	$tweak,$tweak,$tweak,$leperm
-	stvx_u		$tweak,0,$ivp
-
-Lxts_enc_ret:
 	mtspr		256,r12				# restore vrsave
 	li		r3,0
 	blr
@@ -2175,20 +2128,17 @@ Lxts_enc_ret:
 	le?vxor		$inpperm,$inpperm,$tmp
 	vperm		$tweak,$tweak,$inptail,$inpperm
 
-	neg		r11,$inp
-	lvsr		$inpperm,0,r11			# prepare for unaligned load
-	lvx		$inout,0,$inp
-	addi		$inp,$inp,15			# 15 is not typo
-	le?vxor		$inpperm,$inpperm,$tmp
-
-	${UCMP}i	$key2,0				# key2==NULL?
-	beq		Lxts_dec_no_key2
-
 	?lvsl		$keyperm,0,$key2		# prepare for unaligned key
 	lwz		$rounds,240($key2)
 	srwi		$rounds,$rounds,1
 	subi		$rounds,$rounds,1
 	li		$idx,16
+
+	neg		r11,$inp
+	lvsr		$inpperm,0,r11			# prepare for unaligned load
+	lvx		$inout,0,$inp
+	addi		$inp,$inp,15			# 15 is not typo
+	le?vxor		$inpperm,$inpperm,$tmp
 
 	lvx		$rndkey0,0,$key2
 	lvx		$rndkey1,$idx,$key2
@@ -2213,19 +2163,10 @@ Ltweak_xts_dec:
 	?vperm		$rndkey1,$rndkey1,$rndkey0,$keyperm
 	vcipher		$tweak,$tweak,$rndkey1
 	lvx		$rndkey1,$idx,$key2
+	li		$idx,16
 	?vperm		$rndkey0,$rndkey0,$rndkey1,$keyperm
 	vcipherlast	$tweak,$tweak,$rndkey0
 
-	li		$ivp,0				# don't chain the tweak
-	b		Lxts_dec
-
-Lxts_dec_no_key2:
-	neg		$idx,$len
-	andi.		$idx,$idx,15
-	add		$len,$len,$idx			# in "tweak chaining"
-							# mode only complete
-							# blocks are processed
-Lxts_dec:
 	lvx		$inptail,0,$inp
 	addi		$inp,$inp,16
 
@@ -2380,19 +2321,6 @@ Loop_xts_dec_steal:
 	b		Loop_xts_dec			# one more time...
 
 Lxts_dec_done:
-	${UCMP}i	$ivp,0
-	beq		Lxts_dec_ret
-
-	vsrab		$tmp,$tweak,$seven		# next tweak value
-	vaddubm		$tweak,$tweak,$tweak
-	vsldoi		$tmp,$tmp,$tmp,15
-	vand		$tmp,$tmp,$eighty7
-	vxor		$tweak,$tweak,$tmp
-
-	le?vperm	$tweak,$tweak,$tweak,$leperm
-	stvx_u		$tweak,0,$ivp
-
-Lxts_dec_ret:
 	mtspr		256,r12				# restore vrsave
 	li		r3,0
 	blr
@@ -2403,10 +2331,10 @@ Lxts_dec_ret:
 ___
 #########################################################################
 {{	# Optimized XTS procedures					#
-my $key_=$key2;
-my ($x00,$x10,$x20,$x30,$x40,$x50,$x60,$x70)=map("r$_",(0,3,26..31));
+my $key_="r11";
+my ($x00,$x10,$x20,$x30,$x40,$x50,$x60,$x70)=map("r$_",(0,8,26..31));
     $x00=0 if ($flavour =~ /osx/);
-my ($in0,  $in1,  $in2,  $in3,  $in4,  $in5)=map("v$_",(0..5));
+my ($in0,  $in1,  $in2,  $in3,  $in4,  $in5 )=map("v$_",(0..5));
 my ($out0, $out1, $out2, $out3, $out4, $out5)=map("v$_",(7,12..16));
 my ($twk0, $twk1, $twk2, $twk3, $twk4, $twk5)=map("v$_",(17..22));
 my $rndkey0="v23";	# v24-v25 rotating buffer for first found keys
@@ -2418,32 +2346,33 @@ $code.=<<___;
 .align	5
 _aesp8_xts_encrypt6x:
 	$STU		$sp,-`($FRAME+21*16+6*$SIZE_T)`($sp)
-	mflr		r11
+	mflr		r0
 	li		r7,`$FRAME+8*16+15`
-	li		r3,`$FRAME+8*16+31`
-	$PUSH		r11,`$FRAME+21*16+6*$SIZE_T+$LRSAVE`($sp)
+	li		r8,`$FRAME+8*16+31`
+	$PUSH		r0,`$FRAME+21*16+6*$SIZE_T+$LRSAVE`($sp)
 	stvx		v20,r7,$sp		# ABI says so
 	addi		r7,r7,32
-	stvx		v21,r3,$sp
-	addi		r3,r3,32
+	stvx		v21,r8,$sp
+	addi		r8,r8,32
 	stvx		v22,r7,$sp
 	addi		r7,r7,32
-	stvx		v23,r3,$sp
-	addi		r3,r3,32
+	stvx		v23,r8,$sp
+	addi		r8,r8,32
 	stvx		v24,r7,$sp
 	addi		r7,r7,32
-	stvx		v25,r3,$sp
-	addi		r3,r3,32
+	stvx		v25,r8,$sp
+	addi		r8,r8,32
 	stvx		v26,r7,$sp
 	addi		r7,r7,32
-	stvx		v27,r3,$sp
-	addi		r3,r3,32
+	stvx		v27,r8,$sp
+	addi		r8,r8,32
 	stvx		v28,r7,$sp
 	addi		r7,r7,32
-	stvx		v29,r3,$sp
-	addi		r3,r3,32
+	stvx		v29,r8,$sp
+	addi		r8,r8,32
 	stvx		v30,r7,$sp
-	stvx		v31,r3,$sp
+	stvx		v31,r8,$sp
+	mr		r7,r0
 	li		r0,-1
 	stw		$vrsave,`$FRAME+21*16-4`($sp)	# save vrsave
 	li		$x10,0x10
@@ -2460,18 +2389,6 @@ _aesp8_xts_encrypt6x:
 	$PUSH		r31,`$FRAME+21*16+5*$SIZE_T`($sp)
 	li		$x70,0x70
 	mtspr		256,r0
-
-	# Reverse eighty7 to 0x010101..87
-	xxlor		2, 32+$eighty7, 32+$eighty7
-	vsldoi		$eighty7,$tmp,$eighty7,1	# 0x010101..87
-	xxlor		1, 32+$eighty7, 32+$eighty7
-
-	# Load XOR contents. 0xf102132435465768798a9bacbdcedfe
-	mr		$x70, r6
-	bl		Lconsts
-	lxvw4x		0, $x40, r6		# load XOR contents
-	mr		r6, $x70
-	li		$x70,0x70
 
 	subi		$rounds,$rounds,3	# -4 in total
 
@@ -2515,77 +2432,69 @@ Load_xts_enc_key:
 	?vperm		v31,v31,$twk5,$keyperm
 	lvx		v25,$x10,$key_		# pre-load round[2]
 
-	# Switch to use the following codes with 0x010101..87 to generate tweak.
-	#     eighty7 = 0x010101..87
-	# vsrab		tmp, tweak, seven	# next tweak value, right shift 7 bits
-	# vand		tmp, tmp, eighty7	# last byte with carry
-	# vaddubm	tweak, tweak, tweak	# left shift 1 bit (x2)
-	# xxlor		vsx, 0, 0
-	# vpermxor	tweak, tweak, tmp, vsx
-
 	 vperm		$in0,$inout,$inptail,$inpperm
 	 subi		$inp,$inp,31		# undo "caller"
 	vxor		$twk0,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out0,$in0,$twk0
-	xxlor		32+$in1, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in1
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in1,$x10,$inp
 	vxor		$twk1,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in1,$in1,$in1,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out1,$in1,$twk1
-	xxlor		32+$in2, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in2
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in2,$x20,$inp
 	 andi.		$taillen,$len,15
 	vxor		$twk2,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in2,$in2,$in2,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out2,$in2,$twk2
-	xxlor		32+$in3, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in3
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in3,$x30,$inp
 	 sub		$len,$len,$taillen
 	vxor		$twk3,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in3,$in3,$in3,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out3,$in3,$twk3
-	xxlor		32+$in4, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in4
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in4,$x40,$inp
 	 subi		$len,$len,0x60
 	vxor		$twk4,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in4,$in4,$in4,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out4,$in4,$twk4
-	xxlor		32+$in5, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in5
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in5,$x50,$inp
 	 addi		$inp,$inp,0x60
 	vxor		$twk5,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in5,$in5,$in5,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out5,$in5,$twk5
-	xxlor		32+$in0, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in0
+	vxor		$tweak,$tweak,$tmp
 
 	vxor		v31,v31,$rndkey0
 	mtctr		$rounds
@@ -2611,8 +2520,6 @@ Loop_xts_enc6x:
 	lvx		v25,$x10,$key_		# round[4]
 	bdnz		Loop_xts_enc6x
 
-	xxlor		32+$eighty7, 1, 1		# 0x010101..87
-
 	subic		$len,$len,96		# $len-=96
 	 vxor		$in0,$twk0,v31		# xor with last round key
 	vcipher		$out0,$out0,v24
@@ -2622,6 +2529,7 @@ Loop_xts_enc6x:
 	 vaddubm	$tweak,$tweak,$tweak
 	vcipher		$out2,$out2,v24
 	vcipher		$out3,$out3,v24
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vcipher		$out4,$out4,v24
 	vcipher		$out5,$out5,v24
 
@@ -2629,8 +2537,7 @@ Loop_xts_enc6x:
 	 vand		$tmp,$tmp,$eighty7
 	vcipher		$out0,$out0,v25
 	vcipher		$out1,$out1,v25
-	 xxlor		32+$in1, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in1
+	 vxor		$tweak,$tweak,$tmp
 	vcipher		$out2,$out2,v25
 	vcipher		$out3,$out3,v25
 	 vxor		$in1,$twk1,v31
@@ -2641,13 +2548,13 @@ Loop_xts_enc6x:
 
 	and		r0,r0,$len
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vcipher		$out0,$out0,v26
 	vcipher		$out1,$out1,v26
 	 vand		$tmp,$tmp,$eighty7
 	vcipher		$out2,$out2,v26
 	vcipher		$out3,$out3,v26
-	 xxlor		32+$in2, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in2
+	 vxor		$tweak,$tweak,$tmp
 	vcipher		$out4,$out4,v26
 	vcipher		$out5,$out5,v26
 
@@ -2661,6 +2568,7 @@ Loop_xts_enc6x:
 	 vaddubm	$tweak,$tweak,$tweak
 	vcipher		$out0,$out0,v27
 	vcipher		$out1,$out1,v27
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vcipher		$out2,$out2,v27
 	vcipher		$out3,$out3,v27
 	 vand		$tmp,$tmp,$eighty7
@@ -2668,8 +2576,7 @@ Loop_xts_enc6x:
 	vcipher		$out5,$out5,v27
 
 	addi		$key_,$sp,$FRAME+15	# rewind $key_
-	 xxlor		32+$in3, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in3
+	 vxor		$tweak,$tweak,$tmp
 	vcipher		$out0,$out0,v28
 	vcipher		$out1,$out1,v28
 	 vxor		$in3,$twk3,v31
@@ -2678,6 +2585,7 @@ Loop_xts_enc6x:
 	vcipher		$out2,$out2,v28
 	vcipher		$out3,$out3,v28
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vcipher		$out4,$out4,v28
 	vcipher		$out5,$out5,v28
 	lvx		v24,$x00,$key_		# re-pre-load round[1]
@@ -2685,8 +2593,7 @@ Loop_xts_enc6x:
 
 	vcipher		$out0,$out0,v29
 	vcipher		$out1,$out1,v29
-	 xxlor		32+$in4, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in4
+	 vxor		$tweak,$tweak,$tmp
 	vcipher		$out2,$out2,v29
 	vcipher		$out3,$out3,v29
 	 vxor		$in4,$twk4,v31
@@ -2696,14 +2603,14 @@ Loop_xts_enc6x:
 	vcipher		$out5,$out5,v29
 	lvx		v25,$x10,$key_		# re-pre-load round[2]
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 
 	vcipher		$out0,$out0,v30
 	vcipher		$out1,$out1,v30
 	 vand		$tmp,$tmp,$eighty7
 	vcipher		$out2,$out2,v30
 	vcipher		$out3,$out3,v30
-	 xxlor		32+$in5, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in5
+	 vxor		$tweak,$tweak,$tmp
 	vcipher		$out4,$out4,v30
 	vcipher		$out5,$out5,v30
 	 vxor		$in5,$twk5,v31
@@ -2713,6 +2620,7 @@ Loop_xts_enc6x:
 	vcipherlast	$out0,$out0,$in0
 	 lvx_u		$in0,$x00,$inp		# load next input block
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vcipherlast	$out1,$out1,$in1
 	 lvx_u		$in1,$x10,$inp
 	vcipherlast	$out2,$out2,$in2
@@ -2725,10 +2633,7 @@ Loop_xts_enc6x:
 	vcipherlast	$out4,$out4,$in4
 	 le?vperm	$in2,$in2,$in2,$leperm
 	 lvx_u		$in4,$x40,$inp
-	 xxlor		10, 32+$in0, 32+$in0
-	 xxlor		32+$in0, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in0
-	 xxlor		32+$in0, 10, 10
+	 vxor		$tweak,$tweak,$tmp
 	vcipherlast	$tmp,$out5,$in5		# last block might be needed
 						# in stealing mode
 	 le?vperm	$in3,$in3,$in3,$leperm
@@ -2760,8 +2665,6 @@ Loop_xts_enc6x:
 
 	mtctr		$rounds
 	beq		Loop_xts_enc6x		# did $len-=96 borrow?
-
-	xxlor		32+$eighty7, 2, 2		# 0x870101..01
 
 	addic.		$len,$len,0x60
 	beq		Lxts_enc6x_zero
@@ -2932,12 +2835,12 @@ Lxts_enc6x_steal:
 	vperm		$out0,$out0,$out1,$inpperm
 	vsel		$out0,$in0,$tmp,$out0	# $tmp is last block, remember?
 
-	subi		r30,$out,17
+	subi		r3,$out,17
 	subi		$out,$out,16
 	mtctr		$taillen
 Loop_xts_enc6x_steal:
-	lbzu		r0,1(r30)
-	stb		r0,16(r30)
+	lbzu		r0,1(r3)
+	stb		r0,16(r3)
 	bdnz		Loop_xts_enc6x_steal
 
 	li		$taillen,0
@@ -2946,15 +2849,7 @@ Loop_xts_enc6x_steal:
 
 .align	4
 Lxts_enc6x_done:
-	${UCMP}i	$ivp,0
-	beq		Lxts_enc6x_ret
-
-	vxor		$tweak,$twk0,$rndkey0
-	le?vperm	$tweak,$tweak,$tweak,$leperm
-	stvx_u		$tweak,0,$ivp
-
-Lxts_enc6x_ret:
-	mtlr		r11
+	mtlr		r7
 	li		r10,`$FRAME+15`
 	li		r11,`$FRAME+31`
 	stvx		$seven,r10,$sp		# wipe copies of round keys
@@ -3044,7 +2939,7 @@ _aesp8_xts_enc5x:
 	 vxor		$twk0,$twk0,v31
 
 	vcipher		$out0,$out0,v26
-	lvsr		$inpperm,0,$taillen	# $in5 is no more
+	lvsr		$inpperm,r0,$taillen	# $in5 is no more
 	vcipher		$out1,$out1,v26
 	vcipher		$out2,$out2,v26
 	vcipher		$out3,$out3,v26
@@ -3096,32 +2991,33 @@ _aesp8_xts_enc5x:
 .align	5
 _aesp8_xts_decrypt6x:
 	$STU		$sp,-`($FRAME+21*16+6*$SIZE_T)`($sp)
-	mflr		r11
+	mflr		r0
 	li		r7,`$FRAME+8*16+15`
-	li		r3,`$FRAME+8*16+31`
-	$PUSH		r11,`$FRAME+21*16+6*$SIZE_T+$LRSAVE`($sp)
+	li		r8,`$FRAME+8*16+31`
+	$PUSH		r0,`$FRAME+21*16+6*$SIZE_T+$LRSAVE`($sp)
 	stvx		v20,r7,$sp		# ABI says so
 	addi		r7,r7,32
-	stvx		v21,r3,$sp
-	addi		r3,r3,32
+	stvx		v21,r8,$sp
+	addi		r8,r8,32
 	stvx		v22,r7,$sp
 	addi		r7,r7,32
-	stvx		v23,r3,$sp
-	addi		r3,r3,32
+	stvx		v23,r8,$sp
+	addi		r8,r8,32
 	stvx		v24,r7,$sp
 	addi		r7,r7,32
-	stvx		v25,r3,$sp
-	addi		r3,r3,32
+	stvx		v25,r8,$sp
+	addi		r8,r8,32
 	stvx		v26,r7,$sp
 	addi		r7,r7,32
-	stvx		v27,r3,$sp
-	addi		r3,r3,32
+	stvx		v27,r8,$sp
+	addi		r8,r8,32
 	stvx		v28,r7,$sp
 	addi		r7,r7,32
-	stvx		v29,r3,$sp
-	addi		r3,r3,32
+	stvx		v29,r8,$sp
+	addi		r8,r8,32
 	stvx		v30,r7,$sp
-	stvx		v31,r3,$sp
+	stvx		v31,r8,$sp
+	mr		r7,r0
 	li		r0,-1
 	stw		$vrsave,`$FRAME+21*16-4`($sp)	# save vrsave
 	li		$x10,0x10
@@ -3138,18 +3034,6 @@ _aesp8_xts_decrypt6x:
 	$PUSH		r31,`$FRAME+21*16+5*$SIZE_T`($sp)
 	li		$x70,0x70
 	mtspr		256,r0
-
-	# Reverse eighty7 to 0x010101..87
-	xxlor		2, 32+$eighty7, 32+$eighty7
-	vsldoi		$eighty7,$tmp,$eighty7,1	# 0x010101..87
-	xxlor		1, 32+$eighty7, 32+$eighty7
-
-	# Load XOR contents. 0xf102132435465768798a9bacbdcedfe
-	mr		$x70, r6
-	bl		Lconsts
-	lxvw4x		0, $x40, r6		# load XOR contents
-	mr		r6, $x70
-	li		$x70,0x70
 
 	subi		$rounds,$rounds,3	# -4 in total
 
@@ -3198,64 +3082,64 @@ Load_xts_dec_key:
 	vxor		$twk0,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out0,$in0,$twk0
-	xxlor		32+$in1, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in1
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in1,$x10,$inp
 	vxor		$twk1,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in1,$in1,$in1,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out1,$in1,$twk1
-	xxlor		32+$in2, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in2
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in2,$x20,$inp
 	 andi.		$taillen,$len,15
 	vxor		$twk2,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in2,$in2,$in2,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out2,$in2,$twk2
-	xxlor		32+$in3, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in3
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in3,$x30,$inp
 	 sub		$len,$len,$taillen
 	vxor		$twk3,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in3,$in3,$in3,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out3,$in3,$twk3
-	xxlor		32+$in4, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in4
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in4,$x40,$inp
 	 subi		$len,$len,0x60
 	vxor		$twk4,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in4,$in4,$in4,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out4,$in4,$twk4
-	xxlor		32+$in5, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in5
+	vxor		$tweak,$tweak,$tmp
 
 	 lvx_u		$in5,$x50,$inp
 	 addi		$inp,$inp,0x60
 	vxor		$twk5,$tweak,$rndkey0
 	vsrab		$tmp,$tweak,$seven	# next tweak value
 	vaddubm		$tweak,$tweak,$tweak
+	vsldoi		$tmp,$tmp,$tmp,15
 	 le?vperm	$in5,$in5,$in5,$leperm
 	vand		$tmp,$tmp,$eighty7
 	 vxor		$out5,$in5,$twk5
-	xxlor		32+$in0, 0, 0
-	vpermxor	$tweak, $tweak, $tmp, $in0
+	vxor		$tweak,$tweak,$tmp
 
 	vxor		v31,v31,$rndkey0
 	mtctr		$rounds
@@ -3281,8 +3165,6 @@ Loop_xts_dec6x:
 	lvx		v25,$x10,$key_		# round[4]
 	bdnz		Loop_xts_dec6x
 
-	xxlor		32+$eighty7, 1, 1
-
 	subic		$len,$len,96		# $len-=96
 	 vxor		$in0,$twk0,v31		# xor with last round key
 	vncipher	$out0,$out0,v24
@@ -3292,6 +3174,7 @@ Loop_xts_dec6x:
 	 vaddubm	$tweak,$tweak,$tweak
 	vncipher	$out2,$out2,v24
 	vncipher	$out3,$out3,v24
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vncipher	$out4,$out4,v24
 	vncipher	$out5,$out5,v24
 
@@ -3299,8 +3182,7 @@ Loop_xts_dec6x:
 	 vand		$tmp,$tmp,$eighty7
 	vncipher	$out0,$out0,v25
 	vncipher	$out1,$out1,v25
-	 xxlor		32+$in1, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in1
+	 vxor		$tweak,$tweak,$tmp
 	vncipher	$out2,$out2,v25
 	vncipher	$out3,$out3,v25
 	 vxor		$in1,$twk1,v31
@@ -3311,13 +3193,13 @@ Loop_xts_dec6x:
 
 	and		r0,r0,$len
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vncipher	$out0,$out0,v26
 	vncipher	$out1,$out1,v26
 	 vand		$tmp,$tmp,$eighty7
 	vncipher	$out2,$out2,v26
 	vncipher	$out3,$out3,v26
-	 xxlor		32+$in2, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in2
+	 vxor		$tweak,$tweak,$tmp
 	vncipher	$out4,$out4,v26
 	vncipher	$out5,$out5,v26
 
@@ -3331,6 +3213,7 @@ Loop_xts_dec6x:
 	 vaddubm	$tweak,$tweak,$tweak
 	vncipher	$out0,$out0,v27
 	vncipher	$out1,$out1,v27
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vncipher	$out2,$out2,v27
 	vncipher	$out3,$out3,v27
 	 vand		$tmp,$tmp,$eighty7
@@ -3338,8 +3221,7 @@ Loop_xts_dec6x:
 	vncipher	$out5,$out5,v27
 
 	addi		$key_,$sp,$FRAME+15	# rewind $key_
-	 xxlor		32+$in3, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in3
+	 vxor		$tweak,$tweak,$tmp
 	vncipher	$out0,$out0,v28
 	vncipher	$out1,$out1,v28
 	 vxor		$in3,$twk3,v31
@@ -3348,6 +3230,7 @@ Loop_xts_dec6x:
 	vncipher	$out2,$out2,v28
 	vncipher	$out3,$out3,v28
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vncipher	$out4,$out4,v28
 	vncipher	$out5,$out5,v28
 	lvx		v24,$x00,$key_		# re-pre-load round[1]
@@ -3355,8 +3238,7 @@ Loop_xts_dec6x:
 
 	vncipher	$out0,$out0,v29
 	vncipher	$out1,$out1,v29
-	 xxlor		32+$in4, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in4
+	 vxor		$tweak,$tweak,$tmp
 	vncipher	$out2,$out2,v29
 	vncipher	$out3,$out3,v29
 	 vxor		$in4,$twk4,v31
@@ -3366,14 +3248,14 @@ Loop_xts_dec6x:
 	vncipher	$out5,$out5,v29
 	lvx		v25,$x10,$key_		# re-pre-load round[2]
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 
 	vncipher	$out0,$out0,v30
 	vncipher	$out1,$out1,v30
 	 vand		$tmp,$tmp,$eighty7
 	vncipher	$out2,$out2,v30
 	vncipher	$out3,$out3,v30
-	 xxlor		32+$in5, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in5
+	 vxor		$tweak,$tweak,$tmp
 	vncipher	$out4,$out4,v30
 	vncipher	$out5,$out5,v30
 	 vxor		$in5,$twk5,v31
@@ -3383,6 +3265,7 @@ Loop_xts_dec6x:
 	vncipherlast	$out0,$out0,$in0
 	 lvx_u		$in0,$x00,$inp		# load next input block
 	 vaddubm	$tweak,$tweak,$tweak
+	 vsldoi		$tmp,$tmp,$tmp,15
 	vncipherlast	$out1,$out1,$in1
 	 lvx_u		$in1,$x10,$inp
 	vncipherlast	$out2,$out2,$in2
@@ -3395,10 +3278,7 @@ Loop_xts_dec6x:
 	vncipherlast	$out4,$out4,$in4
 	 le?vperm	$in2,$in2,$in2,$leperm
 	 lvx_u		$in4,$x40,$inp
-	 xxlor		10, 32+$in0, 32+$in0
-	 xxlor		32+$in0, 0, 0
-	 vpermxor	$tweak, $tweak, $tmp, $in0
-	 xxlor		32+$in0, 10, 10
+	 vxor		$tweak,$tweak,$tmp
 	vncipherlast	$out5,$out5,$in5
 	 le?vperm	$in3,$in3,$in3,$leperm
 	 lvx_u		$in5,$x50,$inp
@@ -3428,8 +3308,6 @@ Loop_xts_dec6x:
 
 	mtctr		$rounds
 	beq		Loop_xts_dec6x		# did $len-=96 borrow?
-
-	xxlor		32+$eighty7, 2, 2
 
 	addic.		$len,$len,0x60
 	beq		Lxts_dec6x_zero
@@ -3639,11 +3517,11 @@ Lxts_dec6x_steal:
 	vsel		$out0,$in0,$tmp,$out0
 	vxor		$out0,$out0,$twk0
 
-	subi		r30,$out,1
+	subi		r3,$out,1
 	mtctr		$taillen
 Loop_xts_dec6x_steal:
-	lbzu		r0,1(r30)
-	stb		r0,16(r30)
+	lbzu		r0,1(r3)
+	stb		r0,16(r3)
 	bdnz		Loop_xts_dec6x_steal
 
 	li		$taillen,0
@@ -3652,15 +3530,7 @@ Loop_xts_dec6x_steal:
 
 .align	4
 Lxts_dec6x_done:
-	${UCMP}i	$ivp,0
-	beq		Lxts_dec6x_ret
-
-	vxor		$tweak,$twk0,$rndkey0
-	le?vperm	$tweak,$tweak,$tweak,$leperm
-	stvx_u		$tweak,0,$ivp
-
-Lxts_dec6x_ret:
-	mtlr		r11
+	mtlr		r7
 	li		r10,`$FRAME+15`
 	li		r11,`$FRAME+31`
 	stvx		$seven,r10,$sp		# wipe copies of round keys
@@ -3824,7 +3694,7 @@ foreach(split("\n",$code)) {
 	    if ($flavour =~ /le$/o) {
 		SWITCH: for($conv)  {
 		    /\?inv/ && do   { @bytes=map($_^0xf,@bytes); last; };
-		    /\?rev/ && do   { @bytes=reverse(@bytes);    last; };
+		    /\?rev/ && do   { @bytes=reverse(@bytes);    last; }; 
 		}
 	    }
 
@@ -3853,4 +3723,4 @@ foreach(split("\n",$code)) {
         print $_,"\n";
 }
 
-close STDOUT or die "error closing STDOUT: $!";
+close STDOUT;

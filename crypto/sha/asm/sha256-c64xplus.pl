@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2012-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -26,7 +19,8 @@
 # service routines are expected to preserve it and for own well-being
 # zero it upon entry.
 
-$output = pop and open STDOUT,">$output";
+while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {}
+open STDOUT,">$output";
 
 ($CTXA,$INP,$NUM) = ("A4","B4","A6");            # arguments
  $K256="A3";
@@ -45,14 +39,6 @@ $output = pop and open STDOUT,">$output";
 $code.=<<___;
 	.text
 
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.nocmp
-	.asg	sha256_block_data_order,_sha256_block_data_order
-	.endif
-
 	.asg	B3,RA
 	.asg	A15,FP
 	.asg	B15,SP
@@ -64,26 +50,18 @@ $code.=<<___;
 
 	.global	_sha256_block_data_order
 _sha256_block_data_order:
-__sha256_block:
 	.asmfunc stack_usage(64)
 	MV	$NUM,A0				; reassign $NUM
 ||	MVK	-64,B0
   [!A0]	BNOP	RA				; if ($NUM==0) return;
 || [A0]	STW	FP,*SP--[16]			; save frame pointer and alloca(64)
 || [A0]	MV	SP,FP
-   [A0]	ADDKPC	__sha256_block,B2
+   [A0]	ADDKPC	_sha256_block_data_order,B2
 || [A0]	AND	B0,SP,SP			; align stack at 64 bytes
-	.if	__TI_EABI__
    [A0]	MVK	0x00404,B1
-|| [A0]	MVKL	\$PCR_OFFSET(K256,__sha256_block),$K256
+|| [A0]	MVKL	(K256-_sha256_block_data_order),$K256
    [A0]	MVKH	0x50000,B1
-|| [A0]	MVKH	\$PCR_OFFSET(K256,__sha256_block),$K256
-	.else
-   [A0]	MVK	0x00404,B1
-|| [A0]	MVKL	(K256-__sha256_block),$K256
-   [A0]	MVKH	0x50000,B1
-|| [A0]	MVKH	(K256-__sha256_block),$K256
-	.endif
+|| [A0]	MVKH	(K256-_sha256_block_data_order),$K256
    [A0]	MVC	B1,AMR				; setup circular addressing
 || [A0]	MV	SP,$Xia
    [A0]	MV	SP,$Xib
@@ -287,11 +265,7 @@ outerloop?:
 ||	STW	$H,*${CTXB}[7]
 	.endasmfunc
 
-	.if	__TI_EABI__
-	.sect	".text:sha_asm.const"
-	.else
 	.sect	".const:sha_asm"
-	.endif
 	.align	128
 K256:
 	.uword	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5
@@ -316,4 +290,3 @@ K256:
 ___
 
 print $code;
-close STDOUT or die "error closing STDOUT: $!";

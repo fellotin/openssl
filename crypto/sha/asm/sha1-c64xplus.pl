@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2012-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -32,7 +25,8 @@
 # service routines are expected to preserve it and for own well-being
 # zero it upon entry.
 
-$output = pop and open STDOUT,">$output";
+while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {}
+open STDOUT,">$output";
 
 ($CTX,$INP,$NUM) = ("A4","B4","A6");		# arguments
 
@@ -44,13 +38,6 @@ $output = pop and open STDOUT,">$output";
 
 $code=<<___;
 	.text
-
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.asg	sha1_block_data_order,_sha1_block_data_order
-	.endif
 
 	.asg	B3,RA
 	.asg	A15,FP
@@ -333,4 +320,4 @@ $code.=<<___;
 ___
 
 print $code;
-close STDOUT or die "error closing STDOUT: $!";
+close STDOUT;

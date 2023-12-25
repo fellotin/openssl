@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2012-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -23,7 +16,8 @@
 # totally unfair, because this module utilizes Galois Field Multiply
 # instruction.
 
-$output = pop and open STDOUT,">$output";
+while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {}
+open STDOUT,">$output";
 
 ($rp,$a1,$a0,$b1,$b0)=("A4","B4","A6","B6","A8");   # argument vector
 
@@ -42,7 +36,7 @@ $code.=<<___;
 	SHRU	$A,16,   $Ahi		; smash $A to two halfwords
 ||	EXTU	$A,16,16,$Alo
 
-	XORMPY	$Alo,$B_2,$Alox2	; 16x8 bits multiplication
+	XORMPY	$Alo,$B_2,$Alox2	; 16x8 bits muliplication
 ||	XORMPY	$Ahi,$B_2,$Ahix2
 ||	EXTU	$B,16,24,$B_1
 	XORMPY	$Alo,$B_0,$Alox0
@@ -114,38 +108,31 @@ ___
 $code.=<<___;
 	.text
 
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.asg	bn_GF2m_mul_2x2,_bn_GF2m_mul_2x2
-	.endif
-
 	.global	_bn_GF2m_mul_2x2
 _bn_GF2m_mul_2x2:
 	.asmfunc
 	MVK	0xFF,$xFF
 ___
-	&mul_1x1_upper($a0,$b0);		# a0Â·b0
+	&mul_1x1_upper($a0,$b0);		# a0·b0
 $code.=<<___;
 ||	MV	$b1,$B
 	MV	$a1,$A
 ___
-	&mul_1x1_merged("A28","B28",$A,$B);	# a0Â·b0/a1Â·b1
+	&mul_1x1_merged("A28","B28",$A,$B);	# a0·b0/a1·b1
 $code.=<<___;
 ||	XOR	$b0,$b1,$B
 	XOR	$a0,$a1,$A
 ___
-	&mul_1x1_merged("A31","B31",$A,$B);	# a1Â·b1/(a0+a1)Â·(b0+b1)
+	&mul_1x1_merged("A31","B31",$A,$B);	# a1·b1/(a0+a1)·(b0+b1)
 $code.=<<___;
 	XOR	A28,A31,A29
-||	XOR	B28,B31,B29			; a0Â·b0+a1Â·b1
+||	XOR	B28,B31,B29			; a0·b0+a1·b1
 ___
-	&mul_1x1_lower("A30","B30");		# (a0+a1)Â·(b0+b1)
+	&mul_1x1_lower("A30","B30");		# (a0+a1)·(b0+b1)
 $code.=<<___;
 ||	BNOP	B3
 	XOR	A29,A30,A30
-||	XOR	B29,B30,B30			; (a0+a1)Â·(b0+b1)-a0Â·b0-a1Â·b1
+||	XOR	B29,B30,B30			; (a0+a1)·(b0+b1)-a0·b0-a1·b1
 	XOR	B28,A30,A30
 ||	STW	A28,*${rp}[0]
 	XOR	B30,A31,A31
@@ -156,4 +143,4 @@ $code.=<<___;
 ___
 
 print $code;
-close STDOUT or die "error closing STDOUT: $!";
+close STDOUT;

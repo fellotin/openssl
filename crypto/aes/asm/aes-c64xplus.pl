@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2012-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -37,7 +30,8 @@
 #	cost of 8x increased pressure on L1D. 8x because you'd have
 #	to interleave both Te and Td tables...
 
-$output = pop and open STDOUT,">$output";
+while (($output=shift) && ($output!~/\w[\w\-]*\.\w+$/)) {}
+open STDOUT,">$output";
 
 ($TEA,$TEB)=("A5","B5");
 ($KPA,$KPB)=("A3","B1");
@@ -50,18 +44,6 @@ $output = pop and open STDOUT,">$output";
 
 $code=<<___;
 	.text
-
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.nocmp
-	.asg	AES_encrypt,_AES_encrypt
-	.asg	AES_decrypt,_AES_decrypt
-	.asg	AES_set_encrypt_key,_AES_set_encrypt_key
-	.asg	AES_set_decrypt_key,_AES_set_decrypt_key
-	.asg	AES_ctr32_encrypt,_AES_ctr32_encrypt
-	.endif
 
 	.asg	B3,RA
 	.asg	A4,INP
@@ -93,23 +75,13 @@ _AES_encrypt:
 	.asmfunc
 	MVK	1,B2
 __encrypt:
-	.if	__TI_EABI__
    [B2]	LDNDW	*INP++,A9:A8			; load input
-||	MVKL	\$PCR_OFFSET(AES_Te,__encrypt),$TEA
-||	ADDKPC	__encrypt,B0
+||	MVKL	(AES_Te-_AES_encrypt),$TEA
+||	ADDKPC	_AES_encrypt,B0
    [B2]	LDNDW	*INP++,B9:B8
-||	MVKH	\$PCR_OFFSET(AES_Te,__encrypt),$TEA
+||	MVKH	(AES_Te-_AES_encrypt),$TEA
 ||	ADD	0,KEY,$KPA
 ||	ADD	4,KEY,$KPB
-	.else
-   [B2]	LDNDW	*INP++,A9:A8			; load input
-||	MVKL	(AES_Te-__encrypt),$TEA
-||	ADDKPC	__encrypt,B0
-   [B2]	LDNDW	*INP++,B9:B8
-||	MVKH	(AES_Te-__encrypt),$TEA
-||	ADD	0,KEY,$KPA
-||	ADD	4,KEY,$KPB
-	.endif
 	LDW	*$KPA++[2],$Te0[0]		; zero round key
 ||	LDW	*$KPB++[2],$Te0[1]
 ||	MVK	60,A0
@@ -305,23 +277,13 @@ _AES_decrypt:
 	.asmfunc
 	MVK	1,B2
 __decrypt:
-	.if	__TI_EABI__
    [B2]	LDNDW	*INP++,A9:A8			; load input
-||	MVKL	\$PCR_OFFSET(AES_Td,__decrypt),$TEA
-||	ADDKPC	__decrypt,B0
+||	MVKL	(AES_Td-_AES_decrypt),$TEA
+||	ADDKPC	_AES_decrypt,B0
    [B2]	LDNDW	*INP++,B9:B8
-||	MVKH	\$PCR_OFFSET(AES_Td,__decrypt),$TEA
+||	MVKH	(AES_Td-_AES_decrypt),$TEA
 ||	ADD	0,KEY,$KPA
 ||	ADD	4,KEY,$KPB
-	.else
-   [B2]	LDNDW	*INP++,A9:A8			; load input
-||	MVKL	(AES_Td-__decrypt),$TEA
-||	ADDKPC	__decrypt,B0
-   [B2]	LDNDW	*INP++,B9:B8
-||	MVKH	(AES_Td-__decrypt),$TEA
-||	ADD	0,KEY,$KPA
-||	ADD	4,KEY,$KPB
-	.endif
 	LDW	*$KPA++[2],$Td0[0]		; zero round key
 ||	LDW	*$KPB++[2],$Td0[1]
 ||	MVK	60,A0
@@ -553,26 +515,17 @@ __set_encrypt_key:
    [B0]	B	key256?
 || [A1]	LDNDW	*INP++,B19:B18
 
-	.if	__TI_EABI__
    [A0]	ADD	0,KEY,$KPA
 || [A0]	ADD	4,KEY,$KPB
-|| [A0]	MVKL	\$PCR_OFFSET(AES_Te4,__set_encrypt_key),$TEA
-|| [A0]	ADDKPC	__set_encrypt_key,B6
-   [A0]	MVKH	\$PCR_OFFSET(AES_Te4,__set_encrypt_key),$TEA
+|| [A0]	MVKL	(AES_Te4-_AES_set_encrypt_key),$TEA
+|| [A0]	ADDKPC	_AES_set_encrypt_key,B6
+   [A0]	MVKH	(AES_Te4-_AES_set_encrypt_key),$TEA
    [A0]	ADD	B6,$TEA,$TEA			; AES_Te4
-	.else
-   [A0]	ADD	0,KEY,$KPA
-|| [A0]	ADD	4,KEY,$KPB
-|| [A0]	MVKL	(AES_Te4-__set_encrypt_key),$TEA
-|| [A0]	ADDKPC	__set_encrypt_key,B6
-   [A0]	MVKH	(AES_Te4-__set_encrypt_key),$TEA
-   [A0]	ADD	B6,$TEA,$TEA			; AES_Te4
-	.endif
 	NOP
 	NOP
 
 	BNOP	RA,5
-||	MVK	-2,RET				; unknown bit length
+||	MVK	-2,RET				; unknown bit lenght
 ||	MVK	0,B0				; redundant
 ;;====================================================================
 ;;====================================================================
@@ -897,7 +850,7 @@ ret?:						; B0 holds rounds or zero
 	MVC	B0,ILC
 ||	SUB	B0,1,B0
 
-	GMPY4	$K[0],A24,$Kx9[0]		; Â·0x09
+	GMPY4	$K[0],A24,$Kx9[0]		; ·0x09
 ||	GMPY4	$K[1],A24,$Kx9[1]
 ||	MVK	0x00000D0D,A25
 ||	MVK	0x00000E0E,B25
@@ -906,14 +859,14 @@ ret?:						; B0 holds rounds or zero
 ||	MVKH	0x0D0D0000,A25
 ||	MVKH	0x0E0E0000,B25
 
-	GMPY4	$K[0],B24,$KxB[0]		; Â·0x0B
+	GMPY4	$K[0],B24,$KxB[0]		; ·0x0B
 ||	GMPY4	$K[1],B24,$KxB[1]
 	GMPY4	$K[2],B24,$KxB[2]
 ||	GMPY4	$K[3],B24,$KxB[3]
 
 	SPLOOP	11				; InvMixColumns
 ;;====================================================================
-	GMPY4	$K[0],A25,$KxD[0]		; Â·0x0D
+	GMPY4	$K[0],A25,$KxD[0]		; ·0x0D
 ||	GMPY4	$K[1],A25,$KxD[1]
 ||	SWAP2	$Kx9[0],$Kx9[0]			; rotate by 16
 ||	SWAP2	$Kx9[1],$Kx9[1]
@@ -930,7 +883,7 @@ ret?:						; B0 holds rounds or zero
 || [B0]	LDW	*${KPA}[6],$K[2]
 || [B0]	LDW	*${KPB}[7],$K[3]
 
-	GMPY4	$s[0],B25,$KxE[0]		; Â·0x0E
+	GMPY4	$s[0],B25,$KxE[0]		; ·0x0E
 ||	GMPY4	$s[1],B25,$KxE[1]
 ||	XOR	$Kx9[0],$KxB[0],$KxB[0]
 ||	XOR	$Kx9[1],$KxB[1],$KxB[1]
@@ -950,7 +903,7 @@ ret?:						; B0 holds rounds or zero
 
 	XOR	$KxE[0],$KxD[0],$KxE[0]
 ||	XOR	$KxE[1],$KxD[1],$KxE[1]
-|| [B0]	GMPY4	$K[0],A24,$Kx9[0]		; Â·0x09
+|| [B0]	GMPY4	$K[0],A24,$Kx9[0]		; ·0x09
 || [B0]	GMPY4	$K[1],A24,$Kx9[1]
 ||	ADDAW	$KPA,4,$KPA
 	XOR	$KxE[2],$KxD[2],$KxE[2]
@@ -961,7 +914,7 @@ ret?:						; B0 holds rounds or zero
 
 	XOR	$KxB[0],$KxE[0],$KxE[0]
 ||	XOR	$KxB[1],$KxE[1],$KxE[1]
-|| [B0]	GMPY4	$K[0],B24,$KxB[0]		; Â·0x0B
+|| [B0]	GMPY4	$K[0],B24,$KxB[0]		; ·0x0B
 || [B0]	GMPY4	$K[1],B24,$KxB[1]
 	XOR	$KxB[2],$KxE[2],$KxE[2]
 ||	XOR	$KxB[3],$KxE[3],$KxE[3]
@@ -1036,11 +989,7 @@ ___
 }
 # Tables are kept in endian-neutral manner
 $code.=<<___;
-	.if	__TI_EABI__
-	.sect	".text:aes_asm.const"
-	.else
 	.sect	".const:aes_asm"
-	.endif
 	.align	128
 AES_Te:
 	.byte	0xc6,0x63,0x63,0xa5,	0xf8,0x7c,0x7c,0x84
@@ -1378,4 +1327,3 @@ AES_Td4:
 ___
 
 print $code;
-close STDOUT or die "error closing STDOUT: $!";

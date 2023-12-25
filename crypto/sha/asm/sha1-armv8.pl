@@ -1,11 +1,4 @@
-#! /usr/bin/env perl
-# Copyright 2014-2020 The OpenSSL Project Authors. All Rights Reserved.
-#
-# Licensed under the Apache License 2.0 (the "License").  You may not use
-# this file except in compliance with the License.  You can obtain a copy
-# in the file LICENSE in the source distribution or at
-# https://www.openssl.org/source/license.html
-
+#!/usr/bin/env perl
 #
 # ====================================================================
 # Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
@@ -21,30 +14,20 @@
 #
 #		hardware-assisted	software(*)
 # Apple A7	2.31			4.13 (+14%)
-# Cortex-A53	2.24			8.03 (+97%)
+# Cortex-A53	2.19			8.73 (+108%)
 # Cortex-A57	2.35			7.88 (+74%)
-# Denver	2.13			3.97 (+0%)(**)
-# X-Gene				8.80 (+200%)
-# Mongoose	2.05			6.50 (+160%)
-# Kryo		1.88			8.00 (+90%)
-# ThunderX2	2.64			6.36 (+150%)
 #
 # (*)	Software results are presented mostly for reference purposes.
-# (**)	Keep in mind that Denver relies on binary translation, which
-#	optimizes compiler output at run-time.
 
-# $output is the last argument if it looks like a file (it has an extension)
-# $flavour is the first argument if it doesn't look like a file
-$output = $#ARGV >= 0 && $ARGV[$#ARGV] =~ m|\.\w+$| ? pop : undef;
-$flavour = $#ARGV >= 0 && $ARGV[0] !~ m|\.| ? shift : undef;
+$flavour = shift;
+$output  = shift;
 
 $0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
 ( $xlate="${dir}arm-xlate.pl" and -f $xlate ) or
 ( $xlate="${dir}../../perlasm/arm-xlate.pl" and -f $xlate) or
 die "can't locate arm-xlate.pl";
 
-open OUT,"| \"$^X\" $xlate $flavour \"$output\""
-    or die "can't call $xlate: $1";
+open OUT,"| \"$^X\" $xlate $flavour $output";
 *STDOUT=*OUT;
 
 ($ctx,$inp,$num)=("x0","x1","x2");
@@ -62,10 +45,10 @@ $code.=<<___ if ($i<15 && !($i&1));
 	lsr	@Xx[$i+1],@Xx[$i],#32
 ___
 $code.=<<___ if ($i<14 && !($i&1));
-	ldur	@Xx[$i+2],[$inp,#`($i+2)*4-64`]
+	ldr	@Xx[$i+2],[$inp,#`($i+2)*4-64`]
 ___
 $code.=<<___ if ($i<14 && ($i&1));
-#ifdef	__AARCH64EB__
+#ifdef	__ARMEB__
 	ror	@Xx[$i+1],@Xx[$i+1],#32
 #else
 	rev32	@Xx[$i+1],@Xx[$i+1]
@@ -176,24 +159,21 @@ ___
 
 $code.=<<___;
 #include "arm_arch.h"
-#ifndef	__KERNEL__
-.extern OPENSSL_armcap_P
-.hidden OPENSSL_armcap_P
-#endif
 
 .text
 
+.extern	OPENSSL_armcap_P
 .globl	sha1_block_data_order
 .type	sha1_block_data_order,%function
 .align	6
 sha1_block_data_order:
-	AARCH64_VALID_CALL_TARGET
-	adrp	x16,OPENSSL_armcap_P
-	ldr	w16,[x16,#:lo12:OPENSSL_armcap_P]
+	ldr	x16,.LOPENSSL_armcap_P
+	adr	x17,.LOPENSSL_armcap_P
+	add	x16,x16,x17
+	ldr	w16,[x16]
 	tst	w16,#ARMV8_SHA1
 	b.ne	.Lv8_entry
 
-	// Armv8.3-A PAuth: even though x30 is pushed to stack it is not popped later.
 	stp	x29,x30,[sp,#-96]!
 	add	x29,sp,#0
 	stp	x19,x20,[sp,#16]
@@ -211,7 +191,7 @@ sha1_block_data_order:
 	movz	$K,#0x7999
 	sub	$num,$num,#1
 	movk	$K,#0x5a82,lsl#16
-#ifdef	__AARCH64EB__
+#ifdef	__ARMEB__
 	ror	$Xx[0],@Xx[0],#32
 #else
 	rev32	@Xx[0],@Xx[0]
@@ -255,7 +235,6 @@ $code.=<<___;
 .align	6
 sha1_block_armv8:
 .Lv8_entry:
-	// Armv8.3-A PAuth: even though x30 is pushed to stack it is not popped later.
 	stp	x29,x30,[sp,#-16]!
 	add	x29,sp,#0
 
@@ -325,8 +304,11 @@ $code.=<<___;
 .long	0x6ed9eba1,0x6ed9eba1,0x6ed9eba1,0x6ed9eba1	//K_20_39
 .long	0x8f1bbcdc,0x8f1bbcdc,0x8f1bbcdc,0x8f1bbcdc	//K_40_59
 .long	0xca62c1d6,0xca62c1d6,0xca62c1d6,0xca62c1d6	//K_60_79
+.LOPENSSL_armcap_P:
+.quad	OPENSSL_armcap_P-.
 .asciz	"SHA1 block transform for ARMv8, CRYPTOGAMS by <appro\@openssl.org>"
 .align	2
+.comm	OPENSSL_armcap_P,4,4
 ___
 }}}
 
@@ -358,4 +340,4 @@ foreach(split("\n",$code)) {
 	print $_,"\n";
 }
 
-close STDOUT or die "error closing STDOUT: $!";
+close STDOUT;

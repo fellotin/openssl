@@ -1,16 +1,10 @@
-;; Copyright 2012-2016 The OpenSSL Project Authors. All Rights Reserved.
-;;
-;; Licensed under the Apache License 2.0 (the "License").  You may not use
-;; this file except in compliance with the License.  You can obtain a copy
-;; in the file LICENSE in the source distribution or at
-;; https://www.openssl.org/source/license.html
-;;
 ;;====================================================================
 ;; Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
 ;; project.
 ;;
 ;; Rights for redistribution and usage in source and binary forms are
-;; granted according to the License. Warranty of any kind is disclaimed.
+;; granted according to the OpenSSL license. Warranty of any kind is
+;; disclaimed.
 ;;====================================================================
 ;; Compiler-generated multiply-n-add SPLOOP runs at 12*n cycles, n
 ;; being the number of 32-bit words, addition - 8*n. Corresponding 4x
@@ -18,22 +12,6 @@
 ;; SPLOOPs spin at ... 2*n cycles [plus epilogue].
 ;;====================================================================
 	.text
-
-	.if	.ASSEMBLER_VERSION<7000000
-	.asg	0,__TI_EABI__
-	.endif
-	.if	__TI_EABI__
-	.asg	bn_mul_add_words,_bn_mul_add_words
-	.asg	bn_mul_words,_bn_mul_words
-	.asg	bn_sqr_words,_bn_sqr_words
-	.asg	bn_add_words,_bn_add_words
-	.asg	bn_sub_words,_bn_sub_words
-	.asg	bn_div_words,_bn_div_words
-	.asg	bn_sqr_comba8,_bn_sqr_comba8
-	.asg	bn_mul_comba8,_bn_mul_comba8
-	.asg	bn_sqr_comba4,_bn_sqr_comba4
-	.asg	bn_mul_comba4,_bn_mul_comba4
-	.endif
 
 	.asg	B3,RA
 	.asg	A4,ARG0
@@ -180,39 +158,14 @@ _bn_sub_words:
 	.endasmfunc
 
 	.global	_bn_div_words
+	.global	__divull
 _bn_div_words:
 	.asmfunc
-	LMBD	1,A6,A0		; leading zero bits in dv
-	LMBD	1,A4,A1		; leading zero bits in hi
-||	MVK	32,B0
-	CMPLTU	A1,A0,A2
-||	ADD	A0,B0,B0
-  [ A2]	BNOP	RA
-||[ A2]	MVK	-1,A4		; return overflow
-||[!A2]	MV	A4,A3		; reassign hi
-  [!A2]	MV	B4,A4		; reassign lo, will be quotient
-||[!A2]	MVC	B0,ILC
-  [!A2]	SHL	A6,A0,A6	; normalize dv
-||	MVK	1,A1
-
-  [!A2]	CMPLTU	A3,A6,A1	; hi<dv?
-||[!A2]	SHL	A4,1,A5:A4	; lo<<1
-  [!A1]	SUB	A3,A6,A3	; hi-=dv
-||[!A1]	OR	1,A4,A4
-  [!A2]	SHRU	A3,31,A1	; upper bit
-||[!A2]	ADDAH	A5,A3,A3	; hi<<1|lo>>31
-
-	SPLOOP	3
-  [!A1]	CMPLTU	A3,A6,A1	; hi<dv?
-||[ A1]	ZERO	A1
-||	SHL	A4,1,A5:A4	; lo<<1
-  [!A1]	SUB	A3,A6,A3	; hi-=dv
-||[!A1]	OR	1,A4,A4		; quotient
-	SHRU	A3,31,A1	; upper bit
-||	ADDAH	A5,A3,A3	; hi<<1|lo>>31
-	SPKERNEL
-
-	BNOP	RA,5
+	CALLP	__divull,A3	; jump to rts64plus.lib
+||	MV	ARG0,A5
+||	MV	ARG1,ARG0
+||	MV	ARG2,ARG1
+||	ZERO	B5
 	.endasmfunc
 
 ;;====================================================================
@@ -290,9 +243,8 @@ _bn_mul_comba4:
 	.if	0
 	BNOP	sploopNxM?,3
 	;; Above mentioned m*2*(n+1)+10 does not apply in n=m=4 case,
-	;; because of low-counter effect, when prologue phase finishes
-	;; before SPKERNEL instruction is reached. As result it's 25%
-	;; slower than expected...
+	;; because of read-after-write penalties, it's rather
+	;; n*2*(n+3)+10, or 66 cycles [plus various overheads]...
 	MVK	4,B0		; N, RILC
 ||	MVK	4,A0		; M, outer loop counter
 ||	MV	ARG1,A5		; copy ap
@@ -304,7 +256,7 @@ _bn_mul_comba4:
 ||	LDW	*A5++,B6	; ap[0]
 ||	MV	A0,A3		; const A3=M
 	.else
-	;; This alternative is an exercise in fully unrolled Comba
+	;; This alternative is exercise in fully unrolled Comba
 	;; algorithm implementation that operates at n*(n+1)+12, or
 	;; as little as 32 cycles...
 	LDW	*ARG1[0],B16	; a[0]
