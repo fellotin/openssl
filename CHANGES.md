@@ -68,7 +68,16 @@ OpenSSL 3.3
 OpenSSL 3.2
 -----------
 
-### Changes between 3.1 and 3.2 [xx XXX xxxx]
+### Changes between 3.2.0 and 3.2.1 [xx XXX xxxx]
+
+ * none yet
+
+### Changes between 3.1 and 3.2.0 [23 Nov 2023]
+
+ * The BLAKE2b hash algorithm supports a configurable output length
+   by setting the "size" parameter.
+
+   *Čestmír Kalina and Tomáš Mráz*
 
  * The BLAKE2b hash algorithm supports a configurable output length
    by setting the "size" parameter.
